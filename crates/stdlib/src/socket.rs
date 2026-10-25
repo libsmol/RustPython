@@ -20,6 +20,8 @@ mod _socket {
     };
     #[cfg(all(unix, not(target_os = "redox")))]
     use crate::vm::convert::ToPyException;
+    #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
+    use crate::vm::function::FsPath;
     use crate::vm::{
         AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
         builtins::{
@@ -28,14 +30,13 @@ mod _socket {
         },
         convert::{IntoPyException, ToPyObject, TryFromBorrowedObject, TryFromObject},
         function::{
-            ArgBytesLike, ArgIndex, ArgIntoFloat, ArgMemoryBuffer, ArgStrOrBytesLike, FsPath,
-            FuncArgs, OptionalArg,
+            ArgBytesLike, ArgIndex, ArgIntoFloat, ArgMemoryBuffer, ArgStrOrBytesLike, FuncArgs,
+            OptionalArg,
         },
         types::{Constructor, DefaultConstructor, Destructor, Initializer, Representable},
         utils::ToCString,
     };
     use rustpython_host_env::os::ErrorExt;
-    #[cfg(any(unix, windows))]
     use rustpython_host_env::socket as host_socket;
     #[cfg(windows)]
     use rustpython_host_env::windows as host_windows;
@@ -86,6 +87,13 @@ mod _socket {
             WSAEWOULDBLOCK, getprotobyname, getservbyname, getservbyport,
         };
     }
+    // This module is only built for WASI on wasm32-wasip2
+    #[cfg(target_os = "wasi")]
+    mod c {
+        // libc's bindings, with the names wasi-libc has but libc leaves out
+        pub(super) use libc::*;
+        pub(super) use rustpython_host_env::socket::wasi_libc::*;
+    }
     // constants
     #[pyattr(name = "has_ipv6")]
     const HAS_IPV6: bool = true;
@@ -100,7 +108,7 @@ mod _socket {
         SO_SNDBUF, SO_TYPE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET, TCP_NODELAY,
     };
 
-    #[cfg(not(target_os = "redox"))]
+    #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
     #[pyattr]
     use host_socket::{
         AF_APPLETALK, AF_DECnet, AF_IPX, IPPROTO_AH, IPPROTO_DSTOPTS, IPPROTO_EGP, IPPROTO_ESP,
@@ -115,7 +123,7 @@ mod _socket {
     #[pyattr]
     use host_socket::{AI_ADDRCONFIG, AI_NUMERICHOST, AI_NUMERICSERV, AI_PASSIVE};
 
-    #[cfg(not(target_os = "redox"))]
+    #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
     #[pyattr]
     use host_socket::{SOCK_RAW, SOCK_RDM, SOCK_SEQPACKET};
 
@@ -1022,10 +1030,12 @@ mod _socket {
 
     #[cfg(unix)]
     type RawSocket = std::os::unix::io::RawFd;
+    #[cfg(target_os = "wasi")]
+    type RawSocket = std::os::fd::RawFd;
     #[cfg(windows)]
     type RawSocket = std::os::windows::raw::SOCKET;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "wasi"))]
     macro_rules! errcode {
         ($e:ident) => {
             c::$e
@@ -1040,7 +1050,7 @@ mod _socket {
 }
 
     fn get_raw_sock(obj: &PyObject, vm: &VirtualMachine) -> PyResult<RawSocket> {
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         type CastFrom = core::ffi::c_long;
         #[cfg(windows)]
         type CastFrom = core::ffi::c_longlong;
@@ -1179,7 +1189,7 @@ mod _socket {
 
     #[cfg(windows)]
     const CLOSED_ERR: i32 = c::WSAENOTSOCK;
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "wasi"))]
     const CLOSED_ERR: i32 = c::EBADF;
 
     impl Read for &PySocket {
@@ -1843,7 +1853,7 @@ mod _socket {
                 vm.check_signals()?;
                 self.timeout.load() != 0.0
             } else {
-                #[cfg(unix)]
+                #[cfg(any(unix, target_os = "wasi"))]
                 use c::EINPROGRESS;
                 #[cfg(windows)]
                 use c::WSAEWOULDBLOCK as EINPROGRESS;
@@ -3746,7 +3756,7 @@ mod _socket {
     #[cfg(windows)]
     type IfIndex = u32; // NET_IFINDEX but windows-sys 0.59 doesn't have it
 
-    #[cfg(not(target_os = "redox"))]
+    #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
     #[pyfunction]
     fn if_nametoindex(oname: FsPath, vm: &VirtualMachine) -> PyResult<IfIndex> {
         #[cfg(windows)]
@@ -3768,7 +3778,7 @@ mod _socket {
         }
     }
 
-    #[cfg(not(target_os = "redox"))]
+    #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
     #[pyfunction]
     fn if_indextoname(if_index: IfIndex, vm: &VirtualMachine) -> PyResult<String> {
         #[cfg(windows)]
@@ -3897,9 +3907,9 @@ mod _socket {
     }
     /// SAFETY: fileno must not be equal to INVALID_SOCKET
     unsafe fn sock_from_raw_unchecked(fileno: RawSocket) -> Socket {
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         {
-            use std::os::unix::io::FromRawFd;
+            use std::os::fd::FromRawFd;
             unsafe { Socket::from_raw_fd(fileno) }
         }
         #[cfg(windows)]
@@ -3909,9 +3919,9 @@ mod _socket {
         }
     }
     pub(super) fn sock_fileno(sock: &Socket) -> RawSocket {
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         {
-            use std::os::unix::io::AsRawFd;
+            use std::os::fd::AsRawFd;
             sock.as_raw_fd()
         }
         #[cfg(windows)]
@@ -3921,9 +3931,9 @@ mod _socket {
         }
     }
     fn into_sock_fileno(sock: Socket) -> RawSocket {
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         {
-            use std::os::unix::io::IntoRawFd;
+            use std::os::fd::IntoRawFd;
             sock.into_raw_fd()
         }
         #[cfg(windows)]
@@ -3934,7 +3944,7 @@ mod _socket {
     }
 
     pub(super) const INVALID_SOCKET: RawSocket = {
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         {
             -1
         }
@@ -3953,7 +3963,7 @@ mod _socket {
             return io::Error::from(err).into();
         }
         let strerr = {
-            #[cfg(unix)]
+            #[cfg(any(unix, target_os = "wasi"))]
             {
                 match err_kind {
                     SocketError::GaiError => host_socket::gai_error_string(err.error_num()),
@@ -4023,6 +4033,7 @@ mod _socket {
         Ok(())
     }
 
+    #[cfg(not(target_os = "wasi"))]
     #[pyfunction]
     fn dup(object: PyObjectRef, vm: &VirtualMachine) -> Result<RawSocket, IoOrPyException> {
         let sock = get_raw_sock(&object, vm)?;
@@ -4032,6 +4043,13 @@ mod _socket {
         #[cfg(windows)]
         host_socket::set_socket_inheritable(fd as _, false)?;
         Ok(fd)
+    }
+
+    /// The wasi-libc that Rust ships cannot duplicate a descriptor
+    #[cfg(target_os = "wasi")]
+    #[pyfunction]
+    fn dup(_object: PyObjectRef) -> Result<RawSocket, IoOrPyException> {
+        Err(io::Error::from_raw_os_error(c::ENOTSUP).into())
     }
 
     #[pyfunction]

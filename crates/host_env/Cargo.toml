@@ -58,12 +58,14 @@ num_cpus = { workspace = true }
 [target.'cfg(not(any(target_os = "ios", target_os = "android", target_os = "windows", target_arch = "wasm32", target_os = "redox")))'.dependencies]
 mac_address = { workspace = true }
 
+[target.'cfg(any(not(target_arch = "wasm32"), all(target_os = "wasi", target_env = "p2")))'.dependencies]
+socket2 = { workspace = true, features = ["all"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dns-lookup = { workspace = true }
 gethostname = { workspace = true }
 rustyline = { workspace = true }
 rustls-native-certs = { workspace = true, optional = true }
-socket2 = { workspace = true, features = ["all"] }
 which = { workspace = true }
 
 [target.'cfg(all(unix, not(target_os = "ios"), not(target_os = "redox")))'.dependencies]

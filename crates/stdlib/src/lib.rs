@@ -67,13 +67,10 @@ mod suggestions;
 
 // TODO: maybe make this an extension module, if we ever get those
 // mod re;
-#[cfg(all(
-    feature = "host_env",
-    not(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "wasi"))
-))]
+#[cfg(all(feature = "host_env", not(socket_stub)))]
 pub mod socket;
 
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "wasi"))]
+#[cfg(socket_stub)]
 #[path = "socket_wasm.rs"]
 pub mod socket;
 
@@ -275,12 +272,7 @@ pub fn stdlib_module_defs(ctx: &Context) -> Vec<&'static builtins::PyModuleDef> 
         sha256::module_def(ctx),
         sha3::module_def(ctx),
         sha512::module_def(ctx),
-        #[cfg(all(
-            feature = "host_env",
-            not(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "wasi"))
-        ))]
-        socket::module_def(ctx),
-        #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "wasi"))]
+        #[cfg(any(feature = "host_env", socket_stub))]
         socket::module_def(ctx),
         #[cfg(all(
             feature = "sqlite",

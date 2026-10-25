@@ -46,9 +46,12 @@ pub mod windows;
 pub mod fcntl;
 #[cfg(any(unix, windows, target_os = "wasi"))]
 pub mod select;
-#[cfg(any(unix, windows))]
+#[cfg(any(unix, windows, all(target_os = "wasi", target_env = "p2")))]
 pub mod socket;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "wasi"))]
+#[cfg(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(target_os = "wasi", not(target_env = "p2"))
+))]
 #[path = "socket_wasm.rs"]
 pub mod socket;
 #[cfg(unix)]
