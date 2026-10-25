@@ -46,6 +46,8 @@ mod decl {
         function::Either,
         stdlib::time,
     };
+    use core::time::Duration;
+    use std::time::Instant;
 
     #[expect(clippy::unnecessary_wraps, reason = "Needs to comply with a signature")]
     pub(crate) fn module_exec(vm: &VirtualMachine, module: &Py<PyModule>) -> PyResult<()> {
@@ -167,6 +169,12 @@ mod decl {
             )
         };
 
+        // Only bounds the slices of a wait that must come back to check with a
+        // WASI host, which is otherwise handled like EINTR
+        let monotonic = timeout
+            .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
+            .and_then(|wait| Instant::now().checked_add(wait));
+
         loop {
             // `select(2)` updates the fd sets in place. Rebuild them on every
             // attempt, including EINTR retries; otherwise an interrupted call
@@ -175,11 +183,20 @@ mod decl {
             let mut w = fill(&wlist);
             let mut x = fill(&xlist);
 
-            let mut tv = timeout.map(host_select::sec_to_timeval);
+            let until = crate::vm::signal::wait_slice(monotonic);
+            let sliced = until != monotonic;
+            let mut tv = match until {
+                Some(until) if sliced => {
+                    let slice = until.saturating_duration_since(Instant::now());
+                    Some(host_select::sec_to_timeval(slice.as_secs_f64()))
+                }
+                _ => timeout.map(host_select::sec_to_timeval),
+            };
             let res =
                 vm.allow_threads(|| host_select::select(nfds, &mut r, &mut w, &mut x, tv.as_mut()));
 
             match res {
+                Ok(0) if sliced => crate::vm::signal::slice_ended(vm)?,
                 Ok(_) => {
                     return Ok((set2list(rlist, r), set2list(wlist, w), set2list(xlist, x)));
                 }
@@ -392,7 +409,19 @@ mod decl {
                     .transpose()?;
                 let mut poll_timeout = timeout_ms;
                 loop {
-                    match vm.allow_threads(|| host_select::poll_fds(&mut fds, poll_timeout)) {
+                    // A WASI wait comes back after each slice to check with the
+                    // host, which is then handled like EINTR
+                    let until = crate::vm::signal::wait_slice(deadline);
+                    let sliced = until != deadline;
+                    let wait = match until {
+                        Some(until) if sliced => {
+                            let slice = until.saturating_duration_since(Instant::now());
+                            host_select::duration_as_millis_ceiling(slice).unwrap_or(0)
+                        }
+                        _ => poll_timeout,
+                    };
+                    match vm.allow_threads(|| host_select::poll_fds(&mut fds, wait)) {
+                        Ok(0) if sliced => crate::vm::signal::slice_ended(vm)?,
                         Ok(_) => break,
                         Err(err) if err.raw_os_error() == Some(host_select::EINTR) => {
                             vm.check_signals()?
