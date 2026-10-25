@@ -95,7 +95,8 @@ x509-parser = { workspace = true, optional = true }
 pem-rfc7468 = { workspace = true, features = ["alloc"], optional = true }
 webpki-roots = { workspace = true, optional = true }
 
-[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
+# SQLite's own WASI support picks the dotfile locking VFS and leaves out WAL.
+[target.'cfg(all(not(target_os = "android"), any(not(target_arch = "wasm32"), target_os = "wasi")))'.dependencies]
 libsqlite3-sys = { workspace = true, features = ["bundled"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
