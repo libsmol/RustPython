@@ -5,6 +5,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use std::sync::mpsc;
+#[cfg(not(all(target_os = "wasi", feature = "host_env")))]
+use std::time::Instant;
 
 #[cfg(windows)]
 use core::sync::atomic::AtomicIsize;
@@ -212,19 +214,46 @@ pub(crate) fn eval_breaker_pending() -> bool {
 }
 
 #[cfg(all(target_os = "wasi", feature = "host_env"))]
-pub use host_interrupt::set_interrupt_check;
+pub(crate) use host_interrupt::host_interrupted;
 #[cfg(all(target_os = "wasi", feature = "host_env"))]
-pub(crate) use host_interrupt::{ask_host, has_interrupt_check, host_interrupted};
+pub use host_interrupt::{has_interrupt_check, set_interrupt_check, slice_ended, wait_slice};
+
+#[cfg(not(all(target_os = "wasi", feature = "host_env")))]
+#[inline]
+#[must_use]
+pub fn has_interrupt_check() -> bool {
+    false
+}
+
+/// Elsewhere a signal wakes a blocking wait, so it can run up to its deadline.
+#[cfg(not(all(target_os = "wasi", feature = "host_env")))]
+#[inline]
+#[must_use]
+pub fn wait_slice(deadline: Option<Instant>) -> Option<Instant> {
+    deadline
+}
+
+#[cfg(not(all(target_os = "wasi", feature = "host_env")))]
+#[inline]
+pub fn slice_ended(_vm: &VirtualMachine) -> PyResult<()> {
+    Ok(())
+}
 
 /// WASI delivers no signals, so a host interrupts running code through a check it registers.
 #[cfg(all(target_os = "wasi", feature = "host_env"))]
 mod host_interrupt {
     use super::SignalNum;
+    use crate::{PyResult, VirtualMachine};
     use core::cell::Cell;
+    use core::time::Duration;
     use std::sync::OnceLock;
+    use std::time::Instant;
 
     /// Instructions run between two calls to the check
     const CHECK_INTERVAL: u32 = 4096;
+
+    /// How long a blocking wait runs before it comes back to call the check
+    const WAIT_SLICE: Duration = Duration::from_millis(50);
 
     static CHECK: OnceLock<fn() -> bool> = OnceLock::new();
 
@@ -234,17 +263,39 @@ mod host_interrupt {
 
     /// Lets a WASI host interrupt running code.
     ///
-    /// The interpreter calls `check` every few thousand instructions and
-    /// during `time.sleep`. When it returns `true`, SIGINT is raised as if the
-    /// process had received it, so the Python handler runs, which by default
-    /// raises `KeyboardInterrupt`. A check can only be set once, and a second
-    /// one is handed back.
+    /// The interpreter calls `check` every few thousand instructions and while
+    /// `time.sleep`, blocking sockets, `select` and `poll` wait. When it returns
+    /// `true`, SIGINT is raised as if the process had received it, so the
+    /// Python handler runs, which by default raises `KeyboardInterrupt`. A
+    /// check can only be set once, and a second one is handed back.
     pub fn set_interrupt_check(check: fn() -> bool) -> Result<(), fn() -> bool> {
         CHECK.set(check)
     }
 
-    pub(crate) fn has_interrupt_check() -> bool {
+    #[must_use]
+    pub fn has_interrupt_check() -> bool {
         CHECK.get().is_some()
+    }
+
+    /// The deadline for the next stretch of a blocking wait. Nothing can wake a
+    /// wait on WASI, so with a check registered it ends after a short slice.
+    #[must_use]
+    pub fn wait_slice(deadline: Option<Instant>) -> Option<Instant> {
+        if !has_interrupt_check() {
+            return deadline;
+        }
+        let slice = Instant::now() + WAIT_SLICE;
+        Some(deadline.map_or(slice, |deadline| deadline.min(slice)))
+    }
+
+    /// Calls the check when a slice from [`wait_slice`] ends, so an interrupt it
+    /// reports is raised as a signal received during the wait would be.
+    pub fn slice_ended(vm: &VirtualMachine) -> PyResult<()> {
+        if ask_host() {
+            vm.check_signals()
+        } else {
+            Ok(())
+        }
     }
 
     /// Counts down to the next call of the check, and runs on every instruction.
@@ -264,7 +315,7 @@ mod host_interrupt {
     /// Calls the check now, tripping SIGINT when it reports an interrupt.
     #[inline(never)]
     #[cold]
-    pub(crate) fn ask_host() -> bool {
+    fn ask_host() -> bool {
         UNTIL_CHECK.set(CHECK_INTERVAL);
         let Some(check) = CHECK.get() else {
             return false;

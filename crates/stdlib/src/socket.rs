@@ -1415,8 +1415,13 @@ mod _socket {
         where
             F: FnMut() -> io::Result<R>,
         {
+            // A blocking call cannot see a WASI host interrupt, so a blocking
+            // socket first waits in slices until the call will not block
+            let sliced = timeout.is_none()
+                && self.timeout.load() < 0.0
+                && crate::vm::signal::has_interrupt_check();
             loop {
-                if timeout.is_some() || matches!(wait_kind, SockWaitKind::Connect) {
+                if timeout.is_some() || sliced || matches!(wait_kind, SockWaitKind::Connect) {
                     let sock = self.sock_snapshot()?;
                     // Start the clock after the snapshot so lock/scheduling
                     // delay is not subtracted from a short timeout before poll.
@@ -1844,7 +1849,17 @@ mod _socket {
             let sock_addr = self.extract_address(address, caller, vm)?;
 
             let sock = self.sock_snapshot()?;
-            let err = match vm.allow_threads(|| sock.connect(&sock_addr)) {
+            // A blocking connect cannot see a WASI host interrupt either, so it
+            // starts without blocking and waits in slices like one with a timeout
+            let sliced = self.timeout.load() < 0.0 && crate::vm::signal::has_interrupt_check();
+            if sliced {
+                sock.set_nonblocking(true)?;
+            }
+            let connected = vm.allow_threads(|| sock.connect(&sock_addr));
+            if sliced {
+                sock.set_nonblocking(false)?;
+            }
+            let err = match connected {
                 Ok(()) => return Ok(()),
                 Err(e) => e,
             };
@@ -1858,7 +1873,7 @@ mod _socket {
                 #[cfg(windows)]
                 use c::WSAEWOULDBLOCK as EINPROGRESS;
 
-                self.timeout.load() > 0.0 && err.raw_os_error() == Some(EINPROGRESS)
+                (self.timeout.load() > 0.0 || sliced) && err.raw_os_error() == Some(EINPROGRESS)
             };
 
             if wait_connect {
@@ -3457,9 +3472,11 @@ mod _socket {
         };
         let deadline = deadline.map(Deadline::instant);
         loop {
-            match vm.allow_threads(|| wait_fd(sock_fileno(sock), kind, deadline)) {
+            let until = crate::vm::signal::wait_slice(deadline);
+            match vm.allow_threads(|| wait_fd(sock_fileno(sock), kind, until)) {
                 Ok(WaitFd::Ready) => return Ok(()),
-                Ok(WaitFd::Timeout) => return Err(IoOrPyException::Timeout),
+                Ok(WaitFd::Timeout) if until == deadline => return Err(IoOrPyException::Timeout),
+                Ok(WaitFd::Timeout) => crate::vm::signal::slice_ended(vm)?,
                 Err(WaitFdError::Interrupted) => vm.check_signals()?,
                 Err(WaitFdError::Io(err)) => return Err(err.into()),
             }
