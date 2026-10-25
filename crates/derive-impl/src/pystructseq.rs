@@ -274,6 +274,12 @@ pub(crate) fn impl_pystruct_sequence_data(
                     vm: &::rustpython_vm::VirtualMachine,
                     obj: ::rustpython_vm::PyObjectRef,
                 ) -> ::rustpython_vm::PyResult<Self> {
+                    // Iterating a struct sequence leaves out its hidden fields
+                    if let Some(elements) =
+                        ::rustpython_vm::types::struct_sequence_elements(&obj, #n_required, vm)
+                    {
+                        return <Self as ::rustpython_vm::types::PyStructSequenceData>::try_from_elements(elements, vm);
+                    }
                     let seq: Vec<::rustpython_vm::PyObjectRef> = obj.try_into_value(vm)?;
                     if seq.len() != #n_required {
                         return Err(vm.new_type_error(format!(

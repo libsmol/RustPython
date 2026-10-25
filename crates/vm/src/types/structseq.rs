@@ -151,6 +151,22 @@ fn get_visible_len(obj: &PyObject, vm: &VirtualMachine) -> PyResult<usize> {
         .try_into_value(vm)
 }
 
+/// All the elements of a struct sequence with `visible` visible fields, including the
+/// hidden ones that iterating it leaves out, or `None` for any other object.
+#[doc(hidden)]
+pub fn struct_sequence_elements(
+    obj: &PyObject,
+    visible: usize,
+    vm: &VirtualMachine,
+) -> Option<Vec<PyObjectRef>> {
+    let tuple = obj.downcast_ref::<PyTuple>()?;
+    let shown = obj
+        .class()
+        .get_attr(identifier!(vm.ctx, n_sequence_fields))?;
+    let shown: usize = shown.try_into_value(vm).ok()?;
+    (shown == visible).then(|| tuple.as_slice().to_vec())
+}
+
 /// Sequence methods for struct sequences.
 /// Uses n_sequence_fields to determine visible length.
 static STRUCT_SEQUENCE_AS_SEQUENCE: LazyLock<PySequenceMethods> =
