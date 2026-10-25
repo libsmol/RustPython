@@ -27,7 +27,7 @@ mod msg;
 
 pub use rustpython_host_env::ssl::{chain, cipher, oid, providers};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(socket_stub)]
 mod sock_wait_stub {
     use rustpython_vm::{PyRef, VirtualMachine, builtins::PyOSError};
 
@@ -72,9 +72,9 @@ mod _ssl {
         },
     };
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(socket_stub)]
     use super::sock_wait_stub::{SockWaitKind, timeout_error_msg};
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(socket_stub))]
     use crate::socket::{PySocket, SockWaitKind, sock_wait, timeout_error_msg};
 
     // Import error types used in this module (others are exposed via pymodule(with(...)))
@@ -2624,13 +2624,13 @@ mod _ssl {
                 return Ok(false);
             }
 
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(socket_stub)]
             {
                 let _ = (wait_kind, vm);
                 return Ok(false);
             }
 
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(socket_stub))]
             {
                 // Get timeout
                 let timeout = self.get_socket_timeout(vm)?;
@@ -2665,13 +2665,13 @@ mod _ssl {
                 return Ok(false);
             }
 
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(socket_stub)]
             {
                 let _ = (wait_kind, timeout, vm);
                 return Ok(false);
             }
 
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(socket_stub))]
             {
                 if let Some(t) = timeout
                     && t.is_zero()
