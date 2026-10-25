@@ -2733,6 +2733,24 @@ impl VirtualMachine {
             }
         }
 
+        // The stack pointer is wasm's shadow stack, which wasm-ld places between
+        // these symbols at the size given by `-z stack-size`. Threads get their
+        // stacks elsewhere, so this only holds without atomics.
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "wasi",
+            not(target_feature = "atomics")
+        ))]
+        {
+            unsafe extern "C" {
+                static __stack_low: u8;
+                static __stack_high: u8;
+            }
+            let base = &raw const __stack_low as usize;
+            let top = &raw const __stack_high as usize;
+            return (base, top);
+        }
+
         // Fallback: estimate based on current SP and a default stack size
         #[allow(unreachable_code)]
         {
