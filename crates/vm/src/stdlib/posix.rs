@@ -1769,31 +1769,6 @@ pub mod module {
     }
 
     #[pyfunction]
-    fn uname(vm: &VirtualMachine) -> PyResult<_os::UnameResultData> {
-        let info = rustpython_host_env::posix::uname_info().map_err(|err| {
-            let start = err.error.valid_up_to();
-            let end = err
-                .error
-                .error_len()
-                .map_or(err.bytes.len(), |len| start + len);
-            vm.new_unicode_decode_error(
-                vm.ctx.new_str("utf-8"),
-                vm.ctx.new_bytes(err.bytes),
-                start,
-                end,
-                vm.ctx.new_str(err.error.to_string()),
-            )
-        })?;
-        Ok(_os::UnameResultData {
-            sysname: info.sysname,
-            nodename: info.nodename,
-            release: info.release,
-            version: info.version,
-            machine: info.machine,
-        })
-    }
-
-    #[pyfunction]
     fn sync() {
         #[cfg(not(any(target_os = "redox", target_os = "android")))]
         rustpython_host_env::posix::sync();

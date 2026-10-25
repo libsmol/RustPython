@@ -36,4 +36,29 @@ pub(crate) mod _posix_unix_like {
         rustpython_host_env::posix::unlinkat(args.dir_fd.get_opt(), &args.path)
             .map_err(|err| OSErrorBuilder::with_filename(&err, args.path, vm))
     }
+
+    #[pyfunction]
+    fn uname(vm: &VirtualMachine) -> PyResult<_os::UnameResultData> {
+        let info = rustpython_host_env::posix::uname_info().map_err(|err| {
+            let start = err.error.valid_up_to();
+            let end = err
+                .error
+                .error_len()
+                .map_or(err.bytes.len(), |len| start + len);
+            vm.new_unicode_decode_error(
+                vm.ctx.new_str("utf-8"),
+                vm.ctx.new_bytes(err.bytes),
+                start,
+                end,
+                vm.ctx.new_str(err.error.to_string()),
+            )
+        })?;
+        Ok(_os::UnameResultData {
+            sysname: info.sysname,
+            nodename: info.nodename,
+            release: info.release,
+            version: info.version,
+            machine: info.machine,
+        })
+    }
 }

@@ -1,5 +1,6 @@
 //! Common POSIX implementations across Unix-likes.
 
+use core::ffi::CStr;
 use std::{io, path::Path};
 
 use rustix::{
@@ -76,4 +77,27 @@ pub fn stat_path(
 pub fn unlinkat(dir_fd: Option<crt_fd::Borrowed<'_>>, path: impl AsRef<Path>) -> io::Result<()> {
     let dir_fd = dir_fd.as_ref().map_or(fs::CWD, AsFd::as_fd);
     fs::unlinkat(dir_fd, path.as_ref(), AtFlags::empty()).map_err(Into::into)
+}
+
+pub struct UnameInfo {
+    pub sysname: String,
+    pub nodename: String,
+    pub release: String,
+    pub version: String,
+    pub machine: String,
+}
+
+#[derive(Debug)]
+pub struct UnameDecodeError {
+    pub bytes: Vec<u8>,
+    pub error: core::str::Utf8Error,
+}
+
+pub(crate) fn uname_field(value: &CStr) -> Result<String, UnameDecodeError> {
+    core::str::from_utf8(value.to_bytes())
+        .map(str::to_owned)
+        .map_err(|error| UnameDecodeError {
+            bytes: value.to_bytes().to_vec(),
+            error,
+        })
 }
