@@ -1097,13 +1097,15 @@ mod _ssl {
             let os_module = vm.import("os", 0)?;
             let environ = os_module.get_attr("environ", vm)?;
 
-            let mut loaded_certs = Vec::new();
             let mut loaded_file = false;
 
             if let Ok(cert_file) = Self::get_env_path(&environ, "SSL_CERT_FILE", vm)
                 && rustpython_host_env::fs::exists(&cert_file)
             {
-                let mut loader = cert::CertLoader::new(store, &mut loaded_certs);
+                // Kept like those from `load_verify_locations`, which both
+                // verification and `get_ca_certs` read
+                let mut ca_certs_der = self.ca_certs_der.write();
+                let mut loader = cert::CertLoader::new(store, &mut ca_certs_der);
                 if let Ok(stats) = loader.load_from_file(&cert_file) {
                     self.update_cert_stats(stats);
                     loaded_file = true;
