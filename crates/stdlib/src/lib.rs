@@ -105,7 +105,8 @@ mod posixsubprocess;
 // libc is missing constants on redox
 #[cfg(all(
     feature = "sqlite",
-    not(any(target_os = "android", target_arch = "wasm32"))
+    not(target_os = "android"),
+    any(not(target_arch = "wasm32"), target_os = "wasi")
 ))]
 mod _sqlite3;
 
@@ -284,7 +285,8 @@ pub fn stdlib_module_defs(ctx: &Context) -> Vec<&'static builtins::PyModuleDef> 
         socket::module_def(ctx),
         #[cfg(all(
             feature = "sqlite",
-            not(any(target_os = "android", target_arch = "wasm32"))
+            not(target_os = "android"),
+            any(not(target_arch = "wasm32"), target_os = "wasi")
         ))]
         _sqlite3::module_def(ctx),
         #[cfg(all(

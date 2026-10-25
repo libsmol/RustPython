@@ -35,16 +35,17 @@ mod _sqlite3 {
         sqlite3_db_config, sqlite3_db_handle, sqlite3_db_mutex, sqlite3_errcode, sqlite3_errmsg,
         sqlite3_exec, sqlite3_expanded_sql, sqlite3_extended_errcode, sqlite3_finalize,
         sqlite3_free, sqlite3_get_autocommit, sqlite3_interrupt, sqlite3_last_insert_rowid,
-        sqlite3_libversion, sqlite3_limit, sqlite3_mutex_enter, sqlite3_mutex_leave,
-        sqlite3_mutex_try, sqlite3_open_v2, sqlite3_prepare_v2, sqlite3_progress_handler,
-        sqlite3_reset, sqlite3_result_blob, sqlite3_result_double, sqlite3_result_error,
-        sqlite3_result_error_nomem, sqlite3_result_error_toobig, sqlite3_result_int64,
-        sqlite3_result_null, sqlite3_result_text, sqlite3_set_authorizer, sqlite3_sleep,
-        sqlite3_step, sqlite3_stmt, sqlite3_stmt_busy, sqlite3_stmt_readonly, sqlite3_threadsafe,
-        sqlite3_total_changes, sqlite3_trace_v2, sqlite3_user_data, sqlite3_value,
-        sqlite3_value_blob, sqlite3_value_bytes, sqlite3_value_double, sqlite3_value_int64,
-        sqlite3_value_text, sqlite3_value_type,
+        sqlite3_libversion, sqlite3_limit, sqlite3_open_v2, sqlite3_prepare_v2,
+        sqlite3_progress_handler, sqlite3_reset, sqlite3_result_blob, sqlite3_result_double,
+        sqlite3_result_error, sqlite3_result_error_nomem, sqlite3_result_error_toobig,
+        sqlite3_result_int64, sqlite3_result_null, sqlite3_result_text, sqlite3_set_authorizer,
+        sqlite3_sleep, sqlite3_step, sqlite3_stmt, sqlite3_stmt_busy, sqlite3_stmt_readonly,
+        sqlite3_threadsafe, sqlite3_total_changes, sqlite3_trace_v2, sqlite3_user_data,
+        sqlite3_value, sqlite3_value_blob, sqlite3_value_bytes, sqlite3_value_double,
+        sqlite3_value_int64, sqlite3_value_text, sqlite3_value_type,
     };
+    #[cfg(not(target_os = "wasi"))]
+    use libsqlite3_sys::{sqlite3_mutex_enter, sqlite3_mutex_leave, sqlite3_mutex_try};
     use malachite_bigint::Sign;
     use num_traits::ToPrimitive;
     use rustpython_common::{
@@ -1234,7 +1235,7 @@ mod _sqlite3 {
         fn initialize_db(args: &ConnectArgs, vm: &VirtualMachine) -> PyResult<PyRc<Sqlite>> {
             let path = args.database.to_cstring(vm)?;
             let db = PyRc::new(Sqlite::from(SqliteRaw::open(path.as_ptr(), args.uri, vm)?));
-            #[cfg(feature = "threading")]
+            #[cfg(all(feature = "threading", not(target_os = "wasi")))]
             if unsafe { sqlite3_db_mutex(db.db) }.is_null() {
                 return Err(vm.new_runtime_error("SQLite connection mutexes are disabled"));
             }
@@ -3775,6 +3776,19 @@ mod _sqlite3 {
         fn drop(&mut self) {
             unsafe { sqlite3_mutex_leave(self.0) };
         }
+    }
+
+    // libsqlite3-sys builds SQLite for WASI without threads, which leaves out the mutex
+    // functions, and connections there only have the null mutex that they ignore
+    #[cfg(target_os = "wasi")]
+    unsafe fn sqlite3_mutex_enter(_mutex: *mut libsqlite3_sys::sqlite3_mutex) {}
+
+    #[cfg(target_os = "wasi")]
+    unsafe fn sqlite3_mutex_leave(_mutex: *mut libsqlite3_sys::sqlite3_mutex) {}
+
+    #[cfg(target_os = "wasi")]
+    unsafe fn sqlite3_mutex_try(_mutex: *mut libsqlite3_sys::sqlite3_mutex) -> c_int {
+        SQLITE_OK
     }
 
     struct SqliteError {
