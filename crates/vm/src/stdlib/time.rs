@@ -373,6 +373,58 @@ mod decl {
         tz_name.into_pytuple(vm)
     }
 
+    /// `timezone`, `altzone` and `tzname` from the local offsets in January and July,
+    /// as CPython works them out where libc has no `tzname`
+    #[cfg(not(any(unix, windows)))]
+    fn local_zones() -> (i32, i32, (String, String)) {
+        const YEAR: i64 = (365 * 24 + 6) * 3600;
+        let tz = TimeZone::system();
+        let zone = |second: i64| {
+            let instant = Timestamp::from_second(second).unwrap_or(Timestamp::UNIX_EPOCH);
+            let info = tz.to_offset_info(instant);
+            (-info.offset().seconds(), info.abbreviation().to_owned())
+        };
+
+        let january = Timestamp::now().as_second() / YEAR * YEAR;
+        let (winter, winter_name) = zone(january);
+        let (summer, summer_name) = zone(january + YEAR / 2);
+        // Daylight saving time falls in January in the southern hemisphere
+        if winter < summer {
+            (summer, winter, (summer_name, winter_name))
+        } else {
+            (winter, summer, (winter_name, summer_name))
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    #[pyattr]
+    fn altzone(_vm: &VirtualMachine) -> i32 {
+        let (_, altzone, _) = local_zones();
+        altzone
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    #[pyattr]
+    fn timezone(_vm: &VirtualMachine) -> i32 {
+        let (timezone, _, _) = local_zones();
+        timezone
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    #[pyattr]
+    fn daylight(_vm: &VirtualMachine) -> i32 {
+        let (timezone, altzone, _) = local_zones();
+        i32::from(timezone != altzone)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    #[pyattr]
+    fn tzname(vm: &VirtualMachine) -> crate::builtins::PyTupleRef {
+        use crate::builtins::tuple::IntoPyTuple;
+        let (_, _, names) = local_zones();
+        names.into_pytuple(vm)
+    }
+
     #[cfg(not(any(unix, windows)))]
     fn pyobj_to_timestamp(value: Either<f64, i64>, vm: &VirtualMachine) -> PyResult<Timestamp> {
         let secs = match value {
@@ -515,6 +567,65 @@ mod decl {
                 Self::Missing => Zoned::now().datetime(),
             })
         }
+
+        /// What `%Z` and `%z` print, which as with libc are the struct_time's zone
+        /// and offset, or `tzname` and +0000 when it has none, and are empty when
+        /// tm_isdst is negative
+        fn zone_texts(&self, vm: &VirtualMachine) -> PyResult<(String, String)> {
+            let t = match self {
+                Self::Present(t) => t,
+                Self::Missing => {
+                    let now = Zoned::now();
+                    let zone = now.strftime("%Z").to_string();
+                    let offset = now.strftime("%z").to_string();
+                    return Ok((zone, offset));
+                }
+            };
+
+            let isdst: i32 = t.tm_isdst.clone().try_into_value(vm)?;
+            if isdst < 0 {
+                return Ok((String::new(), String::new()));
+            }
+            let zone = if t.tm_zone.is(&vm.ctx.none) {
+                let (_, _, (standard, daylight)) = local_zones();
+                if isdst > 0 { daylight } else { standard }
+            } else {
+                t.tm_zone.str(vm)?.to_string()
+            };
+            let seconds: i32 = if t.tm_gmtoff.is(&vm.ctx.none) {
+                0
+            } else {
+                t.tm_gmtoff.clone().try_into_value(vm)?
+            };
+            let sign = if seconds < 0 { '-' } else { '+' };
+            let minutes = seconds.unsigned_abs() / 60;
+            let offset = format!("{sign}{:02}{:02}", minutes / 60, minutes % 60);
+            Ok((zone, offset))
+        }
+    }
+
+    /// Writes the zone and offset in place of `%Z` and `%z`, since jiff can only
+    /// take them from a time zone, which a struct_time does not have
+    #[cfg(not(any(unix, windows)))]
+    fn zone_filled(format: &str, zone: &str, offset: &str) -> String {
+        let mut filled = String::with_capacity(format.len());
+        let mut chars = format.chars();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                filled.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('Z') => filled.push_str(&zone.replace('%', "%%")),
+                Some('z') => filled.push_str(offset),
+                Some(next) => {
+                    filled.push('%');
+                    filled.push(next);
+                }
+                None => filled.push('%'),
+            }
+        }
+        filled
     }
 
     // https://docs.python.org/3/library/time.html?highlight=gmtime#time.gmtime
@@ -720,13 +831,15 @@ mod decl {
             // If the struct_time can't be represented as NaiveDateTime
             // (e.g. month=0), return the format string as-is, matching
             // the fallback behavior for unsupported chrono formats.
-            let instant = match t.naive_or_local(vm) {
-                Ok(dt) => dt,
-                Err(_) => return Ok(vm.ctx.new_str(fmt_lossy.into_owned()).into()),
+            let zone = t.zone_texts(vm);
+            let (instant, (zone, offset)) = match (t.naive_or_local(vm), zone) {
+                (Ok(dt), Ok(zone)) => (dt, zone),
+                _ => return Ok(vm.ctx.new_str(fmt_lossy.into_owned()).into()),
             };
+            let filled = zone_filled(&fmt_lossy, &zone, &offset);
 
             let mut formatted_time = String::new();
-            write!(&mut formatted_time, "{}", instant.strftime(&*fmt_lossy))
+            write!(&mut formatted_time, "{}", instant.strftime(&*filled))
                 .unwrap_or_else(|_| formatted_time = format.to_string());
             Ok(vm.ctx.new_str(formatted_time).into())
         }
