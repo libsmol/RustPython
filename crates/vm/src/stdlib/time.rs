@@ -301,6 +301,7 @@ mod decl {
 
     #[cfg(not(target_env = "msvc"))]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
     fn altzone(_vm: &VirtualMachine) -> core::ffi::c_long {
         crate::host_env::time::tz::altzone()
@@ -317,6 +318,7 @@ mod decl {
 
     #[cfg(not(target_env = "msvc"))]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
     fn timezone(_vm: &VirtualMachine) -> core::ffi::c_long {
         crate::host_env::time::tz::timezone()
@@ -334,6 +336,7 @@ mod decl {
     #[cfg(not(target_os = "freebsd"))]
     #[cfg(not(target_env = "msvc"))]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
     fn daylight(_vm: &VirtualMachine) -> core::ffi::c_int {
         crate::host_env::time::tz::daylight()
@@ -350,6 +353,7 @@ mod decl {
 
     #[cfg(not(target_env = "msvc"))]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
     fn tzname(vm: &VirtualMachine) -> crate::builtins::PyTupleRef {
         use crate::builtins::tuple::IntoPyTuple;
@@ -367,20 +371,14 @@ mod decl {
     }
 
     /// `timezone`, `altzone` and `tzname` from the local offsets in January and July,
-    /// as CPython works them out where libc has no `tzname`
-    #[cfg(not(any(unix, windows)))]
-    fn local_zones() -> (i32, i32, (String, String)) {
+    /// as CPython works them out on glibc and where libc has no `tzname`
+    #[cfg(any(not(any(unix, windows)), all(target_os = "linux", target_env = "gnu")))]
+    fn local_zones() -> (i64, i64, (String, String)) {
         const YEAR: i64 = (365 * 24 + 6) * 3600;
-        let tz = TimeZone::system();
-        let zone = |second: i64| {
-            let instant = Timestamp::from_second(second).unwrap_or(Timestamp::UNIX_EPOCH);
-            let info = tz.to_offset_info(instant);
-            (-info.offset().seconds(), info.abbreviation().to_owned())
-        };
-
-        let january = Timestamp::now().as_second() / YEAR * YEAR;
-        let (winter, winter_name) = zone(january);
-        let (summer, summer_name) = zone(january + YEAR / 2);
+        let now = host_time::duration_since_system_now().map_or(0, |since| since.as_secs());
+        let january = now as i64 / YEAR * YEAR;
+        let (winter, winter_name) = local_zone(january);
+        let (summer, summer_name) = local_zone(january + YEAR / 2);
         // Daylight saving time falls in January in the southern hemisphere
         if winter < summer {
             (summer, winter, (summer_name, winter_name))
@@ -389,28 +387,59 @@ mod decl {
         }
     }
 
+    /// The offset west of UTC and the zone name at `second`
     #[cfg(not(any(unix, windows)))]
+    fn local_zone(second: i64) -> (i64, String) {
+        let instant = Timestamp::from_second(second).unwrap_or(Timestamp::UNIX_EPOCH);
+        let tz = TimeZone::system();
+        let info = tz.to_offset_info(instant);
+        let offset = i64::from(info.offset().seconds());
+        (-offset, info.abbreviation().to_owned())
+    }
+
+    /// The offset west of UTC and the zone name at `second`
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn local_zone(second: i64) -> (i64, String) {
+        let Some(tm) = host_time::localtime_from_timestamp(second as host_time::TimeT) else {
+            return (0, String::new());
+        };
+        let name = if tm.tm_zone.is_null() {
+            String::new()
+        } else {
+            // SAFETY: glibc points tm_zone at a zone name that stays allocated
+            let name = unsafe { core::ffi::CStr::from_ptr(tm.tm_zone) };
+            name.to_string_lossy().into_owned()
+        };
+        #[allow(
+            clippy::useless_conversion,
+            reason = "tm_gmtoff is a c_long, which is i32 on 32-bit targets"
+        )]
+        let offset = i64::from(tm.tm_gmtoff);
+        (-offset, name)
+    }
+
+    #[cfg(any(not(any(unix, windows)), all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
-    fn altzone(_vm: &VirtualMachine) -> i32 {
+    fn altzone(_vm: &VirtualMachine) -> i64 {
         let (_, altzone, _) = local_zones();
         altzone
     }
 
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(any(not(any(unix, windows)), all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
-    fn timezone(_vm: &VirtualMachine) -> i32 {
+    fn timezone(_vm: &VirtualMachine) -> i64 {
         let (timezone, _, _) = local_zones();
         timezone
     }
 
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(any(not(any(unix, windows)), all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
     fn daylight(_vm: &VirtualMachine) -> i32 {
         let (timezone, altzone, _) = local_zones();
         i32::from(timezone != altzone)
     }
 
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(any(not(any(unix, windows)), all(target_os = "linux", target_env = "gnu")))]
     #[pyattr]
     fn tzname(vm: &VirtualMachine) -> crate::builtins::PyTupleRef {
         use crate::builtins::tuple::IntoPyTuple;
