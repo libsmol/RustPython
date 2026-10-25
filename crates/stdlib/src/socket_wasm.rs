@@ -1,9 +1,8 @@
 //! Wasm `_socket` surface so `Lib/socket.py` and `Lib/ssl.py` can import.
 //!
-//! There are no BSD sockets on wasm32-unknown-unknown, and WASI does not
-//! expose the host_env socket engine yet. Constants, address conversion,
-//! timeouts, and a constructible `socket` type are provided; connect-side
-//! operations raise `OSError`.
+//! There are no BSD sockets on wasm32-unknown-unknown or on WASI before
+//! wasip2. Constants, address conversion, timeouts, and a constructible
+//! `socket` type are provided; connect-side operations raise `OSError`.
 
 pub(crate) use _socket::module_def;
 

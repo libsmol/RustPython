@@ -1,11 +1,18 @@
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 use crate::os::CheckLibcResult;
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 use core::ffi::CStr;
+#[cfg(any(unix, target_os = "wasi"))]
+use std::io;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
-use std::{io, os::fd::BorrowedFd};
+use std::os::fd::BorrowedFd;
+
+// The real socket module is only built for WASI on wasm32-wasip2
+#[cfg(target_os = "wasi")]
+#[path = "socket_wasi.rs"]
+pub mod wasi_libc;
 
 /// Returns the system's hostname.
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,10 +20,27 @@ pub fn hostname() -> std::ffi::OsString {
     gethostname::gethostname()
 }
 
+/// Returns the system's hostname.
+#[cfg(target_os = "wasi")]
+pub fn hostname() -> std::ffi::OsString {
+    let mut buf = [0u8; wasi_libc::NI_MAXHOST as usize + 1];
+    // SAFETY: The buffer is valid for its length, and one byte stays for the NUL
+    let ret = unsafe { wasi_libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) };
+    let len = if ret == 0 {
+        buf.iter().position(|&byte| byte == 0).unwrap_or(0)
+    } else {
+        0
+    };
+    // `OsStringExt` is unstable on wasip2, and host names are ASCII
+    String::from_utf8_lossy(&buf[..len]).into_owned().into()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use ::dns_lookup as dns;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub use ::socket2 as raw;
+#[cfg(target_os = "wasi")]
+pub use wasi_libc::dns;
 
 #[cfg(target_os = "linux")]
 pub mod bluetooth;
@@ -108,6 +132,27 @@ pub use libc::{
     NI_NUMERICHOST, NI_NUMERICSERV, SHUT_RD, SHUT_RDWR, SHUT_WR, SO_BROADCAST, SO_ERROR,
     SO_KEEPALIVE, SO_LINGER, SO_OOBINLINE, SO_RCVBUF, SO_REUSEADDR, SO_SNDBUF, SO_TYPE, SOCK_DGRAM,
     SOL_SOCKET, SOMAXCONN, TCP_NODELAY,
+};
+
+#[cfg(target_os = "wasi")]
+pub use libc::{
+    AF_INET, AF_INET6, AF_UNSPEC, IPPROTO_IP, IPPROTO_IPV6, IPPROTO_TCP, IPPROTO_UDP, MSG_PEEK,
+    SHUT_RD, SHUT_RDWR, SHUT_WR, SO_BROADCAST, SO_ERROR, SO_KEEPALIVE, SO_LINGER, SO_RCVBUF,
+    SO_REUSEADDR, SO_SNDBUF, SO_TYPE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET, TCP_NODELAY,
+    sa_family_t, sockaddr_storage, socklen_t,
+};
+#[cfg(target_os = "wasi")]
+pub use libc::{
+    EAI_SYSTEM, IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP, IP_MULTICAST_LOOP, IP_MULTICAST_TTL, IP_TTL,
+    IPV6_MULTICAST_LOOP, IPV6_UNICAST_HOPS, IPV6_V6ONLY, SO_ACCEPTCONN, SO_RCVTIMEO, SO_SNDTIMEO,
+};
+#[cfg(target_os = "wasi")]
+pub use wasi_libc::{
+    AI_ADDRCONFIG, AI_CANONNAME, AI_NUMERICHOST, AI_NUMERICSERV, AI_PASSIVE, EAI_AGAIN,
+    EAI_BADFLAGS, EAI_FAIL, EAI_FAMILY, EAI_MEMORY, EAI_NODATA, EAI_NONAME, EAI_SERVICE,
+    EAI_SOCKTYPE, INADDR_ANY, INADDR_BROADCAST, INADDR_LOOPBACK, INADDR_NONE, IPPROTO_ICMP,
+    IPPROTO_ICMPV6, MSG_CTRUNC, MSG_DONTROUTE, MSG_OOB, MSG_TRUNC, MSG_WAITALL, NI_DGRAM,
+    NI_MAXHOST, NI_NAMEREQD, NI_NOFQDN, NI_NUMERICHOST, NI_NUMERICSERV, SO_OOBINLINE, SOMAXCONN,
 };
 
 #[cfg(all(unix, not(target_os = "redox")))]
@@ -495,9 +540,9 @@ pub use libc::{sockaddr_alg, sockaddr_can};
 
 /// Port numbers some Unix libcs omit. Windows takes `IPPORT_RESERVED` from
 /// WinSock and defines `IPPORT_USERRESERVED` beside the other extras.
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub const IPPORT_RESERVED: i32 = 1024;
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub const IPPORT_USERRESERVED: i32 = 5000;
 
 /// Multicast groups as unsigned host-order words. Windows publishes the
@@ -632,6 +677,7 @@ pub const SOL_UDP: i32 = 17;
     target_os = "linux",
     target_os = "netbsd",
     target_os = "openbsd",
+    target_os = "wasi",
     target_vendor = "apple",
     windows
 )))]
@@ -704,7 +750,7 @@ pub fn sethostname(hostname: &[u8]) -> io::Result<()> {
     nix::unistd::sethostname(std::ffi::OsStr::from_bytes(hostname)).map_err(io::Error::from)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn close_socket_ignore_connreset(socket: libc::c_int) -> io::Result<()> {
     let ret = unsafe { libc::close(socket) };
     if ret < 0 {
@@ -716,7 +762,7 @@ pub fn close_socket_ignore_connreset(socket: libc::c_int) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn getsockopt_int(fd: libc::c_int, level: i32, name: i32) -> io::Result<i32> {
     let mut flag: libc::c_int = 0;
     let mut flagsize = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
@@ -733,7 +779,7 @@ pub fn getsockopt_int(fd: libc::c_int, level: i32, name: i32) -> io::Result<i32>
     Ok(flag)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn getsockopt_bytes(
     fd: libc::c_int,
     level: i32,
@@ -748,7 +794,7 @@ pub fn getsockopt_bytes(
     Ok(buf)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn setsockopt_bytes(fd: libc::c_int, level: i32, name: i32, value: &[u8]) -> io::Result<()> {
     unsafe {
         libc::setsockopt(
@@ -763,7 +809,7 @@ pub fn setsockopt_bytes(fd: libc::c_int, level: i32, name: i32, value: &[u8]) ->
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn setsockopt_int(fd: libc::c_int, level: i32, name: i32, value: i32) -> io::Result<()> {
     unsafe {
         libc::setsockopt(
@@ -778,7 +824,7 @@ pub fn setsockopt_int(fd: libc::c_int, level: i32, name: i32, value: i32) -> io:
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn setsockopt_none(fd: libc::c_int, level: i32, name: i32, optlen: u32) -> io::Result<()> {
     unsafe {
         libc::setsockopt(
@@ -836,16 +882,20 @@ pub fn if_indextoname_checked(index: u32) -> io::Result<String> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn gai_error_string(err: i32) -> String {
     unsafe { CStr::from_ptr(libc::gai_strerror(err)) }
         .to_string_lossy()
         .into_owned()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn h_error_string(err: i32) -> String {
-    unsafe { CStr::from_ptr(libc::hstrerror(err)) }
+    #[cfg(unix)]
+    let text = unsafe { libc::hstrerror(err) };
+    #[cfg(target_os = "wasi")]
+    let text = unsafe { wasi_libc::hstrerror(err) };
+    unsafe { CStr::from_ptr(text) }
         .to_string_lossy()
         .into_owned()
 }

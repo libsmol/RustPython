@@ -3,6 +3,20 @@
 fn main() {
     println!(r#"cargo::rustc-check-cfg=cfg(osslconf, values("OPENSSL_NO_COMP"))"#);
     println!(r#"cargo::rustc-check-cfg=cfg(openssl_vendored)"#);
+    println!(r#"cargo::rustc-check-cfg=cfg(socket_stub)"#);
+
+    // Browser wasm and WASI before wasip2 have no sockets, so they build `socket_wasm.rs`
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "build scripts read Cargo CARGO_CFG_* vars"
+    )]
+    let target = |name: &str| std::env::var(name).unwrap_or_default();
+    let os = target("CARGO_CFG_TARGET_OS");
+    let browser = target("CARGO_CFG_TARGET_ARCH") == "wasm32" && os == "unknown";
+    let old_wasi = os == "wasi" && target("CARGO_CFG_TARGET_ENV") != "p2";
+    if browser || old_wasi {
+        println!("cargo::rustc-cfg=socket_stub");
+    }
 
     #[allow(
         clippy::unusual_byte_groupings,
