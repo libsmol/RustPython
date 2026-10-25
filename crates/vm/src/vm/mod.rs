@@ -1545,7 +1545,10 @@ impl VirtualMachine {
 
         let mut essential_init = || -> PyResult {
             import::import_builtin(self, "_typing")?;
-            #[cfg(all(not(target_arch = "wasm32"), feature = "host_env"))]
+            #[cfg(all(
+                any(not(target_arch = "wasm32"), target_os = "wasi"),
+                feature = "host_env"
+            ))]
             import::import_builtin(self, "_signal")?;
             #[cfg(any(feature = "parser", feature = "compiler"))]
             import::import_builtin(self, "_ast")?;
@@ -3829,13 +3832,12 @@ impl VirtualMachine {
         if thread::stop_requested_for_current_thread() || self.state.gc.collection_ready() {
             return true;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            crate::signal::eval_breaker_pending()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
+        cfg_select! {
+            all(target_os = "wasi", feature = "host_env") => {
+                crate::signal::eval_breaker_pending() || crate::signal::host_interrupted()
+            }
+            target_arch = "wasm32" => false,
+            _ => crate::signal::eval_breaker_pending(),
         }
     }
 
@@ -3864,7 +3866,10 @@ impl VirtualMachine {
             thread::qsbr_checkpoint();
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(
+            not(target_arch = "wasm32"),
+            all(target_os = "wasi", feature = "host_env")
+        ))]
         crate::signal::check_signals(self)?;
 
         Ok(())

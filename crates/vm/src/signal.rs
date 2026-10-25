@@ -211,6 +211,136 @@ pub(crate) fn eval_breaker_pending() -> bool {
     !EVAL_BREAKER.is_empty()
 }
 
+#[cfg(all(target_os = "wasi", feature = "host_env"))]
+pub use host_interrupt::set_interrupt_check;
+#[cfg(all(target_os = "wasi", feature = "host_env"))]
+pub(crate) use host_interrupt::{ask_host, has_interrupt_check, host_interrupted};
+
+/// WASI delivers no signals, so a host interrupts running code through a check it registers.
+#[cfg(all(target_os = "wasi", feature = "host_env"))]
+mod host_interrupt {
+    use super::SignalNum;
+    use core::cell::Cell;
+    use std::sync::OnceLock;
+
+    /// Instructions run between two calls to the check
+    const CHECK_INTERVAL: u32 = 4096;
+
+    static CHECK: OnceLock<fn() -> bool> = OnceLock::new();
+
+    thread_local! {
+        static UNTIL_CHECK: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Lets a WASI host interrupt running code.
+    ///
+    /// The interpreter calls `check` every few thousand instructions and
+    /// during `time.sleep`. When it returns `true`, SIGINT is raised as if the
+    /// process had received it, so the Python handler runs, which by default
+    /// raises `KeyboardInterrupt`. A check can only be set once, and a second
+    /// one is handed back.
+    pub fn set_interrupt_check(check: fn() -> bool) -> Result<(), fn() -> bool> {
+        CHECK.set(check)
+    }
+
+    pub(crate) fn has_interrupt_check() -> bool {
+        CHECK.get().is_some()
+    }
+
+    /// Counts down to the next call of the check, and runs on every instruction.
+    #[inline(always)]
+    pub(crate) fn host_interrupted() -> bool {
+        if !has_interrupt_check() {
+            return false;
+        }
+        let left = UNTIL_CHECK.get();
+        if left > 0 {
+            UNTIL_CHECK.set(left - 1);
+            return false;
+        }
+        ask_host()
+    }
+
+    /// Calls the check now, tripping SIGINT when it reports an interrupt.
+    #[inline(never)]
+    #[cold]
+    pub(crate) fn ask_host() -> bool {
+        UNTIL_CHECK.set(CHECK_INTERVAL);
+        let Some(check) = CHECK.get() else {
+            return false;
+        };
+        if !check() {
+            return false;
+        }
+        crate::stdlib::_signal::_signal::run_signal(SignalNum::SIGINT.as_i32());
+        true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::set_interrupt_check;
+        use crate::{AsObject, Interpreter, PyResult};
+        use core::time::Duration;
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        /// When the check reports an interrupt, which it does once
+        static DUE: Mutex<Option<Instant>> = Mutex::new(None);
+
+        fn due() -> bool {
+            let mut due = DUE.lock().unwrap();
+            match *due {
+                Some(at) if Instant::now() >= at => {
+                    *due = None;
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        /// Runs `source` with an interrupt due 100 ms in, returning the name of
+        /// the exception it ended with
+        fn run(source: &str) -> Option<String> {
+            let _ = set_interrupt_check(due);
+            Interpreter::without_stdlib(Default::default()).enter(|vm| {
+                let scope = vm.new_scope_with_builtins();
+                *DUE.lock().unwrap() = Some(Instant::now() + Duration::from_millis(100));
+                let result: PyResult = vm.run_string(scope, source, "<unittest>");
+                *DUE.lock().unwrap() = None;
+                result.err().map(|exc| exc.class().name().to_string())
+            })
+        }
+
+        #[test]
+        fn busy_loop_interrupted() {
+            let raised = run("while True: pass");
+            assert_eq!(raised.as_deref(), Some("KeyboardInterrupt"));
+        }
+
+        #[test]
+        fn sleep_interrupted() {
+            let started = Instant::now();
+            let raised = run("import time\ntime.sleep(30)");
+            assert_eq!(raised.as_deref(), Some("KeyboardInterrupt"));
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+
+        #[test]
+        fn sleep_resumes_after_handler() {
+            let source = "\
+import _signal, time
+started = time.monotonic()
+hits = []
+_signal.signal(_signal.SIGINT, lambda signum, frame: hits.append(time.monotonic() - started))
+time.sleep(0.5)
+assert len(hits) == 1 and hits[0] < 0.4, hits
+assert time.monotonic() - started >= 0.5
+";
+            assert_eq!(run(source), None);
+        }
+    }
+}
+
 /// Extra eval-breaker bits used only when more than one thread can run.
 #[cfg(feature = "threading")]
 mod mt {

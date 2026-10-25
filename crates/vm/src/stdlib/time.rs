@@ -199,7 +199,31 @@ mod decl {
             }
         }
 
-        #[cfg(not(unix))]
+        // Nothing can wake a WASI sleep, so it waits in slices when the host
+        // may interrupt, and like after EINTR a handler that returns lets it
+        // finish the remaining time.
+        #[cfg(all(target_os = "wasi", feature = "host_env"))]
+        {
+            use std::time::Instant;
+            let slice = if crate::signal::has_interrupt_check() {
+                Duration::from_millis(50)
+            } else {
+                Duration::MAX
+            };
+            let deadline = Instant::now() + dur;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                vm.allow_threads(|| std::thread::sleep(remaining.min(slice)));
+                if crate::signal::ask_host() {
+                    vm.check_signals()?;
+                }
+            }
+        }
+
+        #[cfg(not(any(unix, all(target_os = "wasi", feature = "host_env"))))]
         {
             vm.allow_threads(|| std::thread::sleep(dur));
         }
