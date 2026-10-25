@@ -11,10 +11,9 @@ pub(crate) use module::module_def;
 ))]
 pub(crate) mod module {
     #[cfg(target_os = "wasi")]
-    use crate::{AsObject, function::OptionalArg, ospath::PathConverter};
+    use crate::{AsObject, convert::IntoPyException, function::OptionalArg, ospath::PathConverter};
     use crate::{
         Py, PyObjectRef, PyResult, VirtualMachine,
-        builtins::PyStrRef,
         ospath::OsPath,
         stdlib::os::{_os, DirFd, SupportFunc, SymlinkArgs, TargetIsDirectory},
     };
@@ -80,7 +79,7 @@ pub(crate) mod module {
     #[derive(FromArgs)]
     struct AccessArgs<'a> {
         #[pyarg(any)]
-        path: PyStrRef,
+        path: OsPath,
         #[pyarg(any)]
         mode: u8,
         #[pyarg(flatten)]
@@ -91,6 +90,27 @@ pub(crate) mod module {
         follow_symlinks: bool,
     }
 
+    #[cfg(target_os = "wasi")]
+    #[pyfunction]
+    pub(super) fn access(args: AccessArgs<'_>, vm: &VirtualMachine) -> PyResult<bool> {
+        let [] = args.dir_fd.0;
+        if args.effective_ids {
+            return Err(
+                vm.new_not_implemented_error("access: effective_ids unavailable on this platform")
+            );
+        }
+        if !args.follow_symlinks {
+            return Err(vm.new_not_implemented_error(
+                "access: follow_symlinks unavailable on this platform",
+            ));
+        }
+        Ok(rustpython_host_env::posix::access(
+            args.path.as_ref(),
+            args.mode,
+        ))
+    }
+
+    #[cfg(not(target_os = "wasi"))]
     #[pyfunction]
     pub(super) fn access(args: AccessArgs<'_>, vm: &VirtualMachine) -> PyResult<bool> {
         let [] = args.dir_fd.0;
@@ -120,6 +140,14 @@ pub(crate) mod module {
         fs::remove_file(&args.path).map_err(|err| err.into_pyexception(vm))
     }
 
+    #[cfg(target_os = "wasi")]
+    #[pyfunction]
+    pub(super) fn symlink(args: SymlinkArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::symlinkat(&args.src, args.dir_fd.get_opt(), &args.dst)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "wasi"))]
     #[pyfunction]
     pub(super) fn symlink(_args: SymlinkArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
         os_unimpl("os.symlink", vm)

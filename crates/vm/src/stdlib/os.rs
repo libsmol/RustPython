@@ -134,7 +134,7 @@ pub(crate) struct SymlinkArgs<'fd> {
     #[cfg_attr(any(unix, target_os = "wasi"), expect(unused))]
     #[pyarg(flatten)]
     pub target_is_directory: TargetIsDirectory,
-    #[cfg_attr(not(unix), expect(unused))]
+    #[cfg_attr(not(any(unix, target_os = "wasi")), expect(unused))]
     #[pyarg(flatten)]
     pub dir_fd: DirFd<'fd, { _os::SYMLINK_DIR_FD as usize }>,
 }

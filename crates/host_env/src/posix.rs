@@ -313,20 +313,6 @@ pub use libc::{
 #[cfg(target_os = "redox")]
 pub use libc::{_SC_HOST_NAME_MAX, _SC_SYMLOOP_MAX};
 
-pub struct UnameInfo {
-    pub sysname: String,
-    pub nodename: String,
-    pub release: String,
-    pub version: String,
-    pub machine: String,
-}
-
-#[derive(Debug)]
-pub struct UnameDecodeError {
-    pub bytes: Vec<u8>,
-    pub error: core::str::Utf8Error,
-}
-
 #[cfg(all(unix, not(target_os = "redox")))]
 #[derive(Clone, Copy, Debug)]
 pub struct StatVfsInfo {
@@ -741,22 +727,13 @@ pub fn fchownat(
 }
 
 pub fn uname_info() -> Result<UnameInfo, UnameDecodeError> {
-    fn decode(value: &CStr) -> Result<String, UnameDecodeError> {
-        core::str::from_utf8(value.to_bytes())
-            .map(str::to_owned)
-            .map_err(|error| UnameDecodeError {
-                bytes: value.to_bytes().to_vec(),
-                error,
-            })
-    }
-
     let info = rustix::system::uname();
     Ok(UnameInfo {
-        sysname: decode(info.sysname())?,
-        nodename: decode(info.nodename())?,
-        release: decode(info.release())?,
-        version: decode(info.version())?,
-        machine: decode(info.machine())?,
+        sysname: uname_field(info.sysname())?,
+        nodename: uname_field(info.nodename())?,
+        release: uname_field(info.release())?,
+        version: uname_field(info.version())?,
+        machine: uname_field(info.machine())?,
     })
 }
 
