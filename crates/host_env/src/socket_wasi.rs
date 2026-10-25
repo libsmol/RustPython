@@ -63,16 +63,6 @@ pub struct protoent {
 }
 
 unsafe extern "C" {
-    pub fn gethostname(name: *mut c_char, len: usize) -> c_int;
-    pub fn getnameinfo(
-        addr: *const libc::sockaddr,
-        addrlen: libc::socklen_t,
-        host: *mut c_char,
-        hostlen: libc::socklen_t,
-        serv: *mut c_char,
-        servlen: libc::socklen_t,
-        flags: c_int,
-    ) -> c_int;
     pub fn getservbyname(name: *const c_char, proto: *const c_char) -> *mut servent;
     pub fn getservbyport(port: c_int, proto: *const c_char) -> *mut servent;
     pub fn getprotobyname(name: *const c_char) -> *mut protoent;
@@ -81,9 +71,9 @@ unsafe extern "C" {
 
 /// The part of the `dns-lookup` API that the socket module uses, since that crate has no WASI support.
 pub mod dns {
-    use super::{NI_MAXHOST, NI_MAXSERV};
+    use super::{NI_DGRAM, NI_NAMEREQD, NI_NUMERICHOST, NI_NUMERICSERV};
     use alloc::ffi::CString;
-    use core::ffi::{CStr, c_char};
+    use core::ffi::{CStr, c_int};
     use core::net::SocketAddr;
     use socket2::{SockAddr, SockAddrStorage};
     use std::io;
@@ -228,30 +218,39 @@ pub mod dns {
         })
     }
 
+    /// WASI has no reverse lookup, so the only name known is `localhost` for loopback
+    /// addresses, as in a hosts file. Other hosts stay numeric, which is what
+    /// getnameinfo gives when it finds no name, unless `NI_NAMEREQD` asks for one.
     pub fn getnameinfo(sock: &SocketAddr, flags: i32) -> Result<(String, String), LookupError> {
-        let address = SockAddr::from(*sock);
-        let mut host = [0 as c_char; NI_MAXHOST as usize];
-        let mut service = [0 as c_char; NI_MAXSERV as usize];
-        // SAFETY: The address and both buffers are valid for the lengths passed
-        let err = unsafe {
-            super::getnameinfo(
-                address.as_ptr().cast(),
-                address.len(),
-                host.as_mut_ptr(),
-                host.len() as libc::socklen_t,
-                service.as_mut_ptr(),
-                service.len() as libc::socklen_t,
-                flags,
-            )
-        };
-        if err != 0 {
-            return Err(LookupError::new(err));
+        let named = sock.ip().is_loopback() && flags & NI_NUMERICHOST == 0;
+        if flags & NI_NAMEREQD != 0 && !named {
+            return Err(LookupError::new(super::EAI_NONAME));
         }
-        // SAFETY: getnameinfo NUL-terminates both buffers on success
-        let host = unsafe { CStr::from_ptr(host.as_ptr()) };
-        let service = unsafe { CStr::from_ptr(service.as_ptr()) };
-        let host = host.to_string_lossy().into_owned();
-        let service = service.to_string_lossy().into_owned();
+        let host = match sock {
+            _ if named => "localhost".to_owned(),
+            SocketAddr::V6(addr) if addr.scope_id() != 0 => {
+                format!("{}%{}", addr.ip(), addr.scope_id())
+            }
+            _ => sock.ip().to_string(),
+        };
+        let port = sock.port();
+        let service = match flags & NI_NUMERICSERV {
+            0 => service_name(port, flags & NI_DGRAM != 0),
+            _ => None,
+        };
+        let service = service.unwrap_or_else(|| port.to_string());
         Ok((host, service))
+    }
+
+    fn service_name(port: u16, datagram: bool) -> Option<String> {
+        let proto = if datagram { c"udp" } else { c"tcp" };
+        // SAFETY: getservbyport takes the port in network order and returns null or a static entry
+        let entry = unsafe { super::getservbyport(c_int::from(port.to_be()), proto.as_ptr()) };
+        if entry.is_null() {
+            return None;
+        }
+        // SAFETY: A non-null entry has a NUL-terminated name
+        let name = unsafe { CStr::from_ptr((*entry).s_name) };
+        Some(name.to_string_lossy().into_owned())
     }
 }

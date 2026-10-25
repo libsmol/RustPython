@@ -20,19 +20,10 @@ pub fn hostname() -> std::ffi::OsString {
     gethostname::gethostname()
 }
 
-/// Returns the system's hostname.
+/// Returns `localhost`, since WASI has no hostname (wasi-libc reports `(none)`).
 #[cfg(target_os = "wasi")]
 pub fn hostname() -> std::ffi::OsString {
-    let mut buf = [0u8; wasi_libc::NI_MAXHOST as usize + 1];
-    // SAFETY: The buffer is valid for its length, and one byte stays for the NUL
-    let ret = unsafe { wasi_libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) };
-    let len = if ret == 0 {
-        buf.iter().position(|&byte| byte == 0).unwrap_or(0)
-    } else {
-        0
-    };
-    // `OsStringExt` is unstable on wasip2, and host names are ASCII
-    String::from_utf8_lossy(&buf[..len]).into_owned().into()
+    "localhost".into()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
