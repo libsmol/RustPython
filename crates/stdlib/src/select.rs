@@ -52,7 +52,7 @@ mod decl {
         #[cfg(windows)]
         rustpython_host_env::windows::init_winsock();
 
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         {
             use crate::vm::class::PyClassImpl;
             let _ = poll::PyPoll::make_static_type();
@@ -202,20 +202,24 @@ mod decl {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "wasi"))]
     #[pyfunction]
     fn poll() -> poll::PyPoll {
         poll::PyPoll::default()
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "wasi"))]
     #[pyattr]
     use host_select::{
-        PIPE_BUF, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLPRI, POLLRDBAND, POLLRDNORM,
-        POLLWRBAND, POLLWRNORM,
+        PIPE_BUF, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLPRI, POLLRDNORM, POLLWRNORM,
     };
 
+    // WASI has no priority bands
     #[cfg(unix)]
+    #[pyattr]
+    use host_select::{POLLRDBAND, POLLWRBAND};
+
+    #[cfg(any(unix, target_os = "wasi"))]
     pub(super) mod poll {
         use super::*;
         use crate::vm::{

@@ -9,6 +9,16 @@ pub use libc::{
     POLLRDNORM, POLLWRBAND, POLLWRNORM,
 };
 
+#[cfg(target_os = "wasi")]
+pub use libc::{EINTR, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLRDNORM, POLLWRNORM};
+/// wasi-libc defines it for source compatibility only, and `poll` ignores it
+/// because WASI has no out-of-band data
+#[cfg(target_os = "wasi")]
+pub const POLLPRI: libc::c_short = 0x0200;
+/// wasi-libc's `limits.h` value, which the libc crate does not bind
+#[cfg(target_os = "wasi")]
+pub const PIPE_BUF: usize = 4096;
+
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "redox"))]
 pub use libc::{
     EPOLL_CLOEXEC, EPOLLERR, EPOLLET, EPOLLEXCLUSIVE, EPOLLHUP, EPOLLIN, EPOLLMSG, EPOLLONESHOT,
@@ -139,7 +149,7 @@ pub mod platform {
 
 #[cfg(target_os = "wasi")]
 pub mod platform {
-    pub use libc::{FD_SETSIZE, timeval};
+    pub use libc::{FD_SETSIZE, pollfd, timeval};
     use std::io;
     pub use std::os::fd::RawFd;
 
@@ -210,7 +220,7 @@ pub mod platform {
 
 pub use platform::{RawFd, timeval};
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub type PollFd = platform::pollfd;
 
 #[repr(transparent)]
@@ -432,7 +442,7 @@ fn wait_fd_select(
 }
 
 /// Convert a duration to a `poll(2)` millisecond timeout, rounding toward +∞.
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn duration_as_millis_ceiling(d: Duration) -> Option<i32> {
     let mut ms = d.as_millis();
     if Duration::from_millis(ms.min(u128::from(u64::MAX)) as u64) < d {
@@ -441,13 +451,13 @@ pub fn duration_as_millis_ceiling(d: Duration) -> Option<i32> {
     i32::try_from(ms).ok()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 #[inline]
 pub fn search_poll_fd(fds: &[PollFd], fd: i32) -> Result<usize, usize> {
     fds.binary_search_by_key(&fd, |pfd| pfd.fd)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn insert_poll_fd(fds: &mut Vec<PollFd>, fd: i32, events: i16) {
     match search_poll_fd(fds, fd) {
         Ok(i) => fds[i].events = events,
@@ -462,17 +472,17 @@ pub fn insert_poll_fd(fds: &mut Vec<PollFd>, fd: i32, events: i16) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn get_poll_fd_mut(fds: &mut [PollFd], fd: i32) -> Option<&mut PollFd> {
     search_poll_fd(fds, fd).ok().map(move |i| &mut fds[i])
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn remove_poll_fd(fds: &mut Vec<PollFd>, fd: i32) -> Option<PollFd> {
     search_poll_fd(fds, fd).ok().map(|i| fds.remove(i))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn poll_fds(fds: &mut [PollFd], timeout: i32) -> std::io::Result<i32> {
     let res = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
     if res < 0 {
