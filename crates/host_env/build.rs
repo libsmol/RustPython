@@ -1,4 +1,5 @@
 //! Like CPython's `HAVE_ALTZONE`, it detects the presence of `altzone` in `time.h` at build time.
+//! On WASI it links wasi-libc's signal emulation, which Rust's WASI targets don't ship.
 
 #![allow(
     clippy::disallowed_methods,
@@ -13,13 +14,23 @@ fn main() {
 
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target = env::var("TARGET").unwrap_or_default();
+
+    // Emitted here rather than in `.cargo/config.toml` so crates embedding RustPython link it too
+    if matches!(target.as_str(), "wasm32-wasip1" | "wasm32-wasip2") {
+        let manifest =
+            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+        let vendor = manifest.join("vendor").join(&target);
+        println!("cargo:rerun-if-changed={}", vendor.display());
+        println!("cargo:rustc-link-search=native={}", vendor.display());
+        println!("cargo:rustc-link-lib=static=wasi-emulated-signal");
+    }
 
     if target_env == "msvc" || target_arch == "wasm32" {
         return;
     }
 
     let host = env::var("HOST").unwrap_or_default();
-    let target = env::var("TARGET").unwrap_or_default();
     // cc::Build resolves CC_<target>, CC_<target_with_underscores>, TARGET_CC, then CC.
     if host != target && !has_target_c_compiler(&target) {
         return;
